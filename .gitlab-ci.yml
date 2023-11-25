@@ -1,0 +1,11 @@
+
+stages:
+  - build
+
+cargo-build:
+  image: rust:latest
+  stage: build
+  tags:
+    - places-docker
+  script:
+    - cargo build
