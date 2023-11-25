@@ -1,19 +1,23 @@
+#![cfg_attr(not(test), no_std)]
 pub mod error;
 
-use core::ops::Sub;
+use core::ops::{Add, Sub};
 use error::*;
 
-macro_rules! impl_sup_types {
+macro_rules! impl_unsigned_types {
     ($($t:ty),*) => {
         $(
+            impl BaseType for $t {}
             impl UType for $t {}
         )*
     };
 }
 
-pub trait UType: Clone + Copy + PartialOrd + Into<u32> + Sub { }
+pub trait BaseType: Clone + Copy + PartialOrd + Sub<Output = Self> + Add<Output = Self> {}
 
-impl_sup_types!(u8, u16);
+pub trait UType: BaseType + Into<u32> + TryFrom<u32> {}
+
+impl_unsigned_types!(u8, u16, u32);
 
 #[derive(Debug, Clone)]
 pub struct DpSearchResult {
@@ -22,58 +26,11 @@ pub struct DpSearchResult {
 }
 
 impl DpSearchResult {
-    pub fn search_u8(val: u8, x_axis: &[u8]) -> Result<Self> {
-        let mut result = DpSearchResult { index: 0, ratio: 0};
-        let len = x_axis.len();
-
-        if len < 1 {
-            Err(Error::AxisToShort)
-        } else if val <= x_axis[0] {
-            result.index = 0;
-            result.ratio = 0;
-
-            Ok(result)
-        } else if val >= x_axis[len - 1] {
-            result.index = len - 1;
-            result.ratio = 0;
-
-            Ok(result)
-        }
-        else {
-            let mut lower = 0;
-            let mut upper = len - 1;
-            let mut mid: usize;
-
-            while upper - lower > 1 {
-                mid = (lower + upper) / 2;
-
-                if val < x_axis[mid] {
-                    upper = mid;
-                } else {
-                    lower = mid;
-                }
-            }
-
-            result.index = lower;
-
-            let left = u32::from(val) - u32::from(x_axis[lower]);
-            let right = u32::from(x_axis[lower + 1]) - u32::from(x_axis[lower]);
-            let ratio = (left * 0x10000) / right;
-
-            match u16::try_from(ratio) {
-                Ok(res) => result.ratio = res,
-                Err(_) => return Err(Error::UnconditionalState),
-            }
-
-            Ok(result)
-        }
-    }
-
     pub fn search<T>(val: T, x_axis: &[T]) -> Result<Self>
     where
-        T: UType
+        T: UType,
     {
-        let mut result = DpSearchResult { index: 0, ratio: 0};
+        let mut result = DpSearchResult { index: 0, ratio: 0 };
         let len = x_axis.len();
 
         if len < 1 {
@@ -114,33 +71,36 @@ impl DpSearchResult {
                     result.ratio = ratio;
                     Ok(result)
                 }
-                Err(_) => Err(Error::UnconditionalState)
+                Err(_) => Err(Error::UnconditionalState),
             }
         }
     }
 }
 
-pub fn rs_ipo_cur_u8(dp_res: &DpSearchResult, y_axis: &[u8]) -> Result<u8> {
+pub fn ipo_cur_u<T>(dp_res: &DpSearchResult, y_axis: &[T]) -> Result<T>
+where
+    T: UType,
+{
     if 0 == dp_res.ratio {
         Ok(y_axis[dp_res.index])
     } else {
         if y_axis[dp_res.index] <= y_axis[dp_res.index + 1] {
-            let diff = u32::from(y_axis[dp_res.index + 1] - y_axis[dp_res.index]);
+            let diff = (y_axis[dp_res.index + 1] - y_axis[dp_res.index]).into();
             let offset = (diff * u32::from(dp_res.ratio)) / 0x10000;
-            
-            match u8::try_from(offset) {
+
+            match T::try_from(offset) {
                 Ok(offset) => Ok(y_axis[dp_res.index] + offset),
                 Err(_) => Err(Error::UnconditionalState),
             }
         } else {
-            let diff = u32::from(y_axis[dp_res.index] - y_axis[dp_res.index + 1]);
+            let diff = (y_axis[dp_res.index] - y_axis[dp_res.index + 1]).into();
             let offset = (diff * u32::from(dp_res.ratio)) / 0x10000;
-            
-            match u8::try_from(offset) {
+
+            match T::try_from(offset) {
                 Ok(offset) => Ok(y_axis[dp_res.index] - offset),
                 Err(_) => Err(Error::UnconditionalState),
             }
-       }
+        }
     }
 }
 
@@ -153,51 +113,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dp_search_test() -> Result<()> {
-        let axis = [10, 20, 30, 40];
-
-        let rs_result = DpSearchResult::search_u8(5, &axis)?;
-        assert_eq!(rs_result.index, 0);
-        assert_eq!(rs_result.ratio, 0);
-
-        let rs_result = DpSearchResult::search_u8(30, &axis)?;
-        assert_eq!(rs_result.index, 2);
-        assert_eq!(rs_result.ratio, 0);
-
-        let rs_result = DpSearchResult::search_u8(25, &axis)?;
-        assert_eq!(rs_result.index, 1);
-        assert_eq!(rs_result.ratio, 0x8000);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_ipo_cur() -> Result<()> {
-        let y_axis = [10, 20, 30, 40];
-
-        let rs_dp_res = DpSearchResult{ index: 1, ratio: 0x8000};
-        let rs_ret_val = rs_ipo_cur_u8(&rs_dp_res, &y_axis)?;
-        assert_eq!(rs_ret_val, 25);
-
-        let y_axis = [0, 100];
-
-        let rs_dp_res = DpSearchResult{ index: 0, ratio: 0x4000};
-        let rs_ret_val = rs_ipo_cur_u8(&rs_dp_res, &y_axis)?;
-        assert_eq!(rs_ret_val, 25);
-
-        let rs_dp_res = DpSearchResult{ index: 0, ratio: 0x8000};
-        let rs_ret_val = rs_ipo_cur_u8(&rs_dp_res, &y_axis)?;
-        assert_eq!(rs_ret_val, 50);
-
-        let rs_dp_res = DpSearchResult{ index: 0, ratio: 0xC000};
-        let rs_ret_val = rs_ipo_cur_u8(&rs_dp_res, &y_axis)?;
-        assert_eq!(rs_ret_val, 75);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_gen_usearch() -> Result<()> {
+    fn datapoint_search_u_test() -> Result<()> {
         const X_AXIS_U8: [u8; 4] = [10, 20, 30, 40];
         const X_AXIS_U16: [u16; 4] = [100, 200, 300, 400];
 
@@ -218,4 +134,43 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn ipo_cur_u16_test() -> Result<()> {
+        let y_axis_1: [u16; 4] = [100, 200, 300, 400];
+        let y_axis_2: [u16; 4] = [400, 300, 200, 100];
+
+        let mut dp_res = DpSearchResult { index: 1, ratio: 0 };
+        let result = ipo_cur_u(&dp_res, &y_axis_1)?;
+        assert_eq!(result, 200);
+
+        dp_res.index = 2;
+        dp_res.ratio = 0x8000;
+        let result = ipo_cur_u(&dp_res, &y_axis_1)?;
+        assert_eq!(result, 350);
+
+        let result = ipo_cur_u(&dp_res, &y_axis_2)?;
+        assert_eq!(result, 150);
+
+        Ok(())
+    }
+
+    #[test]
+    fn ipo_cur_u8_test() -> Result<()> {
+        let y_axis_1: [u8; 4] = [10, 20, 30, 40];
+        let y_axis_2: [u8; 4] = [40, 30, 20, 10];
+
+        let mut dp_res = DpSearchResult { index: 1, ratio: 0 };
+        let result = ipo_cur_u(&dp_res, &y_axis_1)?;
+        assert_eq!(result, 20);
+
+        dp_res.index = 2;
+        dp_res.ratio = 0x8000;
+        let result = ipo_cur_u(&dp_res, &y_axis_1)?;
+        assert_eq!(result, 35);
+
+        let result = ipo_cur_u(&dp_res, &y_axis_2)?;
+        assert_eq!(result, 15);
+
+        Ok(())
+    }
 }
